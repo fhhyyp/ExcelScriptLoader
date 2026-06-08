@@ -1,0 +1,5 @@
+<DnaLibrary Name="ExcelScriptLoader" RuntimeVersion="v10.0">
+  <ExternalLibrary Path="ExcelScriptLoader.dll" Pack="true" LoadFromBytes="true" />
+  <Reference Path="office.dll" Pack="true" />
+  <Reference Path="Microsoft.Office.Interop.Excel.dll" Pack="true" />
+</DnaLibrary>
