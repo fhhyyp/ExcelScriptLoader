@@ -4,18 +4,11 @@
 //
 // 架构:
 //   本文件仅包含 [PrototypeExtension] 顶层 API（用户直接调用 excel.xxx）。
-//   Workbook / Worksheet / Cell / Range / Table 的子 API 分别位于:
-//     ExcelModule.Workbook.cs
-//     ExcelModule.Worksheet.cs
-//     ExcelModule.Cell.cs
-//     ExcelModule.Range.cs
-//     ExcelModule.Table.cs
-//   内部工具方法位于:
-//     ExcelModule.Utilities.cs
+//   子对象工厂和工具方法位于 ExcelFactory.cs，通过 using static 导入。
 //
 // 模式:
 //   - 顶层 excel.*  → PrototypeExtension（本文件）
-//   - 子对象 API    → ObjectValue + FunctionValue（各工厂文件）
+//   - 子对象 API    → ObjectValue + FunctionValue（ExcelFactory.cs）
 //   - 零反射、零原型依赖，直接委托调用 COM
 // ============================================================================
 
@@ -24,6 +17,7 @@ using ScriptLang;
 using ScriptLang.Runtime;
 using ExcelApplication = Microsoft.Office.Interop.Excel.Application;
 using ExcelRange = Microsoft.Office.Interop.Excel.Range;
+using static ExcelScriptLoader.ExcelFactory;
 
 namespace ExcelScriptLoader
 {
@@ -37,9 +31,8 @@ namespace ExcelScriptLoader
 
         /// <summary>
         /// 类型匹配检查 — 脚本引擎用于判断 Value 是否属于此原型。
-        /// 注意: 不使用 partial — 源生成器声明已移除，此处直接提供完整实现。
         /// </summary>
-        public bool IsTarget(Value value) =>
+        public partial bool IsTarget(Value value) =>
             value is ClrObjectValue clr && clr.Value is ExcelModule;
 
         // ========================================================================

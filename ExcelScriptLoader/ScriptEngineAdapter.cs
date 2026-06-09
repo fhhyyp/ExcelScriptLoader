@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Microsoft.Office.Interop.Excel;
+using Microsoft.VisualBasic;
 using ScriptLang;
 using ScriptLang.Runtime;
 using ExcelApplication = Microsoft.Office.Interop.Excel.Application;
@@ -68,9 +69,6 @@ public class ScriptEngineAdapter : IDisposable
 
         // 构建 Excel 对象作用域
         RefreshExcelScope();
-
-        // 注册内置函数
-        RegisterBuiltinFunctions();
     }
 
     /// <summary>
@@ -118,11 +116,6 @@ public class ScriptEngineAdapter : IDisposable
                 // 创建任务并执行
                 var scope = _excelScope ?? new Scope(_engine.GlobalScope);
                 var task = _engine.CreateTaskFromSource(scriptCode, macroName, scope);
-
-                // CreateTaskFromSource 内部会调用 GlobalScope.Clear() 清除所有变量，
-                // 然后 BuiltinCache.RegisterAll() 仅重新注册 13 个内置函数。
-                // msgbox / inputbox 是自定义函数，不在 BuiltinCache 中，需要重新注册。
-                ReRegisterCustomFunctions();
 
                 var result = await task.RunAsync();
 
@@ -182,7 +175,7 @@ public class ScriptEngineAdapter : IDisposable
 
         try
         {
-            // ★ 关键修复：在创建新作用域前，显式释放旧作用域中跟踪的 COM 对象
+            // 在创建新作用域前，显式释放旧作用域中跟踪的 COM 对象
             ReleaseTrackedComObjects();
 
             _excelScope = new Scope(_engine.GlobalScope);
@@ -191,6 +184,7 @@ public class ScriptEngineAdapter : IDisposable
             // 同时跟踪这些 COM 对象，以便后续显式释放
             _excelScope.DefineClrObject("app", _excelApp);
             // _excelApp 已经在 AddIn 层单独管理，此处不重复跟踪
+
 
             try
             {
@@ -223,6 +217,10 @@ public class ScriptEngineAdapter : IDisposable
                 TrackComObject(sel);
             }
             catch { /* 无选中区域 */ }
+
+
+           
+
         }
         catch (Exception ex)
         {
@@ -295,6 +293,17 @@ public class ScriptEngineAdapter : IDisposable
             var properties = new Dictionary<string, Value>
             {
                 { "excel", new ClrObjectValue(excel) },
+                { "msgbox", new FunctionValue("msgbox", args =>
+                {
+                    if (args.Count > 0)
+                        MessageBox.Show(args[0].AsString(), "Excel Script",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }) },
+                { "inputbox", new FunctionValue("inputbox", args =>
+                {
+                    var prompt = args.FirstOrDefault()?.AsString() ?? "";
+                    return StringValue.Create(Interaction.InputBox(prompt, "Excel Script", ""));
+                }) },
             };
 
             var module = new ObjectValue(properties);
@@ -304,70 +313,6 @@ public class ScriptEngineAdapter : IDisposable
         {
             System.Diagnostics.Debug.WriteLine(
                 $"[ScriptEngineAdapter] 注册 excel 模块失败: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// 注册内置工具函数到全局作用域
-    /// </summary>
-    private void RegisterBuiltinFunctions()
-    {
-        if (_engine == null) return;
-
-        // msgbox(message) — 弹出消息框
-        _engine.GlobalScope.Define("msgbox", new ClrObjectValue(new Action<string>(message =>
-        {
-            System.Windows.Forms.MessageBox.Show(
-                message, "Excel Script",
-                System.Windows.Forms.MessageBoxButtons.OK,
-                System.Windows.Forms.MessageBoxIcon.Information);
-        })), isMutable: false);
-
-        // inputbox(prompt) — 弹出输入框
-        _engine.GlobalScope.Define("inputbox", new ClrObjectValue(new Func<string, string>(prompt =>
-        {
-            return Microsoft.VisualBasic.Interaction.InputBox(
-                prompt, "Excel Script", "");
-        })), isMutable: false);
-    }
-
-    /// <summary>
-    /// 重新注册自定义函数到全局作用域。
-    /// ScriptEngine.CreateTaskFromSource() 内部会调用 GlobalScope.Clear()，
-    /// 然后仅重新注册 13 个 BuiltinCache 内置函数（debug、print 等）。
-    /// msgbox / inputbox 是插件自定义函数，每次清除后需重新注入。
-    /// </summary>
-    private void ReRegisterCustomFunctions()
-    {
-        if (_engine == null) return;
-
-        try
-        {
-            // 仅在已被清除的情况下重新注册（Define 变量已存在时不会抛异常）
-            if (!_engine.GlobalScope.IsDefinedLocally("msgbox"))
-            {
-                _engine.GlobalScope.Define("msgbox", new ClrObjectValue(new Action<string>(message =>
-                {
-                    System.Windows.Forms.MessageBox.Show(
-                        message, "Excel Script",
-                        System.Windows.Forms.MessageBoxButtons.OK,
-                        System.Windows.Forms.MessageBoxIcon.Information);
-                })), isMutable: false);
-            }
-
-            if (!_engine.GlobalScope.IsDefinedLocally("inputbox"))
-            {
-                _engine.GlobalScope.Define("inputbox", new ClrObjectValue(new Func<string, string>(prompt =>
-                {
-                    return Microsoft.VisualBasic.Interaction.InputBox(
-                        prompt, "Excel Script", "");
-                })), isMutable: false);
-            }
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine(
-                $"[ScriptEngineAdapter] 重新注册自定义函数失败: {ex.Message}");
         }
     }
 
@@ -403,7 +348,7 @@ public class ScriptEngineAdapter : IDisposable
         // 1. 清空编译缓存
         _engine?.ClearCache();
 
-        // 2. ★ 关键：显式释放所有跟踪的 COM 对象
+        // 2. 显式释放所有跟踪的 COM 对象
         ReleaseTrackedComObjects();
 
         // 3. 清空作用域与引擎引用
