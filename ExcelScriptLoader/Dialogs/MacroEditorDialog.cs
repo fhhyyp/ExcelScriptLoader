@@ -24,7 +24,7 @@ public class MacroEditorDialog : Form
         _isEditMode = false; _existingMacro = null;
         _hasVsCode = ExternalEditor.IsVsCodeAvailable;
         InitializeUI();
-        _txtCode.Text = "import { excel } from \"excel\"\r\n\r\n";
+        _txtCode.Text = "import { excel, msgbox } from \"excel\"\r\n\r\n";
         _txtCode.Select(_txtCode.Text.Length, 0);
     }
 

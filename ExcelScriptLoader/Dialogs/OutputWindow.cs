@@ -9,6 +9,7 @@ public class OutputWindow : Form
     private static OutputWindow? _instance;
     private TextBox _txtOutput = null!;
     private Button _btnClear = null!;
+    private Button _btnCopy = null!;
 
     public static OutputWindow Instance => _instance ??= new OutputWindow();
 
@@ -31,6 +32,20 @@ public class OutputWindow : Form
             Size = new Size(60, 26),
         };
         _btnClear.Click += (_, _) => Clear();
+
+        _btnCopy = new Button
+        {
+            Text = "复制",
+            Location = new Point(78, y),
+            Size = new Size(60, 26),
+        };
+        _btnCopy.Click += (_, _) =>
+        {
+            if (!string.IsNullOrEmpty(_txtOutput.Text))
+            {
+                Clipboard.SetText(_txtOutput.Text);
+            }
+        };
         y += 32;
 
         _txtOutput = new TextBox
@@ -47,7 +62,7 @@ public class OutputWindow : Form
                    | AnchorStyles.Left | AnchorStyles.Right,
         };
 
-        Controls.AddRange([_btnClear, _txtOutput]);
+        Controls.AddRange([_btnClear, _btnCopy, _txtOutput]);
 
         FormClosing += (_, e) =>
         {
