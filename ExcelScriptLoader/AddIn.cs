@@ -113,9 +113,11 @@ public class AddIn : IExcelAddIn
             CurrentMacros.Clear();
 
             // 释放 Excel Application COM 引用
+            // 使用 FinalReleaseComObject 一次性释放 RCW 持有的所有 COM 引用计数，
+            // 比 ReleaseComObject 更彻底，避免因多重 RCW 包装导致的进程残留。
             if (ExcelApp != null)
             {
-                System.Runtime.InteropServices.Marshal.ReleaseComObject(ExcelApp);
+                System.Runtime.InteropServices.Marshal.FinalReleaseComObject(ExcelApp);
                 ExcelApp = null;
             }
 

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using Microsoft.Office.Interop.Excel;
 using ScriptLang;
 using ScriptLang.Runtime;
@@ -45,6 +46,12 @@ public class ScriptEngineAdapter : IDisposable
     private ExcelApplication? _excelApp;
     private bool _disposed;
 
+    /// <summary>
+    /// 跟踪所有通过 DefineClrObject 注入到作用域的 COM 对象，
+    /// 确保在 Dispose 时显式释放，防止 Excel 进程残留。
+    /// </summary>
+    private readonly List<object> _trackedComObjects = [];
+
     /// <summary>引擎实例（用于 Ribbon 等访问）</summary>
     public ScriptEngine? Engine => _engine;
 
@@ -67,7 +74,7 @@ public class ScriptEngineAdapter : IDisposable
     }
 
     /// <summary>
-    /// 刷新 Excel 对象引用（每次执行前调用，确保 work​book/sheet/cell 是最新的）
+    /// 刷新 Excel 对象引用（每次执行前调用，确保 workbook/sheet/cell 是最新的）
     /// </summary>
     public void RefreshExcelContext()
     {
@@ -111,6 +118,12 @@ public class ScriptEngineAdapter : IDisposable
                 // 创建任务并执行
                 var scope = _excelScope ?? new Scope(_engine.GlobalScope);
                 var task = _engine.CreateTaskFromSource(scriptCode, macroName, scope);
+
+                // CreateTaskFromSource 内部会调用 GlobalScope.Clear() 清除所有变量，
+                // 然后 BuiltinCache.RegisterAll() 仅重新注册 13 个内置函数。
+                // msgbox / inputbox 是自定义函数，不在 BuiltinCache 中，需要重新注册。
+                ReRegisterCustomFunctions();
+
                 var result = await task.RunAsync();
 
                 sw.Stop();
@@ -135,13 +148,15 @@ public class ScriptEngineAdapter : IDisposable
 
     /// <summary>
     /// 同步执行脚本代码（用于 UI 线程调用）
+    /// 直接在当前线程同步执行，避免 Task.Run 导致的跨线程 COM 访问问题。
+    /// ExecuteAsync 内部无真正异步操作（RunAsync 返回已完成 Task），
+    /// 因此 GetAwaiter().GetResult() 不会造成死锁。
     /// </summary>
     public ScriptResult Execute(string scriptCode, string macroName)
     {
-        // WinForms UI 线程不支持 async，使用 Task.Run 兜底
         try
         {
-            return Task.Run(() => ExecuteAsync(scriptCode, macroName))
+            return ExecuteAsync(scriptCode, macroName)
                 .GetAwaiter().GetResult();
         }
         catch (AggregateException ae)
@@ -157,7 +172,9 @@ public class ScriptEngineAdapter : IDisposable
     // ==================== 内部方法 ====================
 
     /// <summary>
-    /// 重建 Excel 对象作用域
+    /// 重建 Excel 对象作用域。
+    /// 在创建新作用域之前，先显式释放旧作用域中的 COM 对象引用，
+    /// 防止 RCW 累积导致 Excel 进程无法退出。
     /// </summary>
     private void RefreshExcelScope()
     {
@@ -165,21 +182,46 @@ public class ScriptEngineAdapter : IDisposable
 
         try
         {
+            // ★ 关键修复：在创建新作用域前，显式释放旧作用域中跟踪的 COM 对象
+            ReleaseTrackedComObjects();
+
             _excelScope = new Scope(_engine.GlobalScope);
 
             // 注入 Excel 对象（使用 ClrObjectValue 包装）
+            // 同时跟踪这些 COM 对象，以便后续显式释放
             _excelScope.DefineClrObject("app", _excelApp);
+            // _excelApp 已经在 AddIn 层单独管理，此处不重复跟踪
 
-            try { _excelScope.DefineClrObject("workbook", _excelApp.ActiveWorkbook); }
+            try
+            {
+                var wb = _excelApp.ActiveWorkbook;
+                _excelScope.DefineClrObject("workbook", wb);
+                TrackComObject(wb);
+            }
             catch { /* 无活动工作簿 */ }
 
-            try { _excelScope.DefineClrObject("sheet", _excelApp.ActiveSheet); }
+            try
+            {
+                var sheet = _excelApp.ActiveSheet;
+                _excelScope.DefineClrObject("sheet", sheet);
+                TrackComObject(sheet);
+            }
             catch { /* 无活动工作表 */ }
 
-            try { _excelScope.DefineClrObject("cell", _excelApp.ActiveCell); }
+            try
+            {
+                var cell = _excelApp.ActiveCell;
+                _excelScope.DefineClrObject("cell", cell);
+                TrackComObject(cell);
+            }
             catch { /* 无活动单元格 */ }
 
-            try { _excelScope.DefineClrObject("selection", _excelApp.Selection); }
+            try
+            {
+                var sel = _excelApp.Selection;
+                _excelScope.DefineClrObject("selection", sel);
+                TrackComObject(sel);
+            }
             catch { /* 无选中区域 */ }
         }
         catch (Exception ex)
@@ -187,6 +229,44 @@ public class ScriptEngineAdapter : IDisposable
             System.Diagnostics.Debug.WriteLine(
                 $"[ScriptEngineAdapter] 刷新 Excel 作用域失败: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// 跟踪 COM 对象，确保在 Dispose 时显式释放
+    /// </summary>
+    private void TrackComObject(object? comObj)
+    {
+        if (comObj != null && Marshal.IsComObject(comObj))
+        {
+            _trackedComObjects.Add(comObj);
+        }
+    }
+
+    /// <summary>
+    /// 显式释放所有跟踪的 COM 对象引用。
+    /// 使用 FinalReleaseComObject 一次性释放 RCW 持有的所有 COM 引用计数，
+    /// 不依赖 GC 回收与 RCW 终结器。
+    /// </summary>
+    private void ReleaseTrackedComObjects()
+    {
+        // 逆序释放（遵循 COM 释放惯例：先创建的后释放）
+        for (int i = _trackedComObjects.Count - 1; i >= 0; i--)
+        {
+            try
+            {
+                var obj = _trackedComObjects[i];
+                if (obj != null && Marshal.IsComObject(obj))
+                {
+                    Marshal.FinalReleaseComObject(obj);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine(
+                    $"[ScriptEngineAdapter] 释放 COM 对象失败: {ex.Message}");
+            }
+        }
+        _trackedComObjects.Clear();
     }
 
     /// <summary>
@@ -252,6 +332,46 @@ public class ScriptEngineAdapter : IDisposable
     }
 
     /// <summary>
+    /// 重新注册自定义函数到全局作用域。
+    /// ScriptEngine.CreateTaskFromSource() 内部会调用 GlobalScope.Clear()，
+    /// 然后仅重新注册 13 个 BuiltinCache 内置函数（debug、print 等）。
+    /// msgbox / inputbox 是插件自定义函数，每次清除后需重新注入。
+    /// </summary>
+    private void ReRegisterCustomFunctions()
+    {
+        if (_engine == null) return;
+
+        try
+        {
+            // 仅在已被清除的情况下重新注册（Define 变量已存在时不会抛异常）
+            if (!_engine.GlobalScope.IsDefinedLocally("msgbox"))
+            {
+                _engine.GlobalScope.Define("msgbox", new ClrObjectValue(new Action<string>(message =>
+                {
+                    System.Windows.Forms.MessageBox.Show(
+                        message, "Excel Script",
+                        System.Windows.Forms.MessageBoxButtons.OK,
+                        System.Windows.Forms.MessageBoxIcon.Information);
+                })), isMutable: false);
+            }
+
+            if (!_engine.GlobalScope.IsDefinedLocally("inputbox"))
+            {
+                _engine.GlobalScope.Define("inputbox", new ClrObjectValue(new Func<string, string>(prompt =>
+                {
+                    return Microsoft.VisualBasic.Interaction.InputBox(
+                        prompt, "Excel Script", "");
+                })), isMutable: false);
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(
+                $"[ScriptEngineAdapter] 重新注册自定义函数失败: {ex.Message}");
+        }
+    }
+
+    /// <summary>
     /// 格式化异常信息为可读文本
     /// </summary>
     private static string FormatException(Exception ex, string macroName)
@@ -270,14 +390,27 @@ public class ScriptEngineAdapter : IDisposable
         return message;
     }
 
+    /// <summary>
+    /// 释放所有资源。
+    /// 显式释放跟踪的 COM 对象，清空脚本引擎与作用域引用。
+    /// 注意：_excelApp 不由此类释放（由 AddIn.AutoClose 统一管理）。
+    /// </summary>
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
 
+        // 1. 清空编译缓存
         _engine?.ClearCache();
+
+        // 2. ★ 关键：显式释放所有跟踪的 COM 对象
+        ReleaseTrackedComObjects();
+
+        // 3. 清空作用域与引擎引用
         _excelScope = null;
         _engine = null;
+
+        // 4. 不释放 _excelApp（由 AddIn.AutoClose 负责）
         _excelApp = null;
     }
 }
