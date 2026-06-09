@@ -58,7 +58,13 @@ excel.active.save()
 ExcelScriptLoader.slnx
 ├── ExcelScriptLoader/            ← Excel-DNA XLL 插件
 │   ├── AddIn.cs                  IExcelAddIn 入口，生命周期管理
-│   ├── ExcelModule.cs            Excel 脚本 API（ObjectValue+FunctionValue 模式）
+│   ├── ExcelModule.cs            excel.* 顶层 API（PrototypeExtension）
+│   ├── ExcelModule.Workbook.cs   工作簿对象工厂
+│   ├── ExcelModule.Worksheet.cs  工作表对象工厂
+│   ├── ExcelModule.Cell.cs       单元格对象工厂
+│   ├── ExcelModule.Range.cs      区域对象工厂
+│   ├── ExcelModule.Table.cs      表格对象工厂
+│   ├── ExcelModule.Utilities.cs  值转换 / 读写 / 格式化工具
 │   ├── ExcelMacro.cs             宏数据模型 + XML 序列化
 │   ├── MacroStorage.cs           CustomXMLParts 存储层
 │   ├── ScriptEngineAdapter.cs    脚本引擎适配 + Console 重定向
@@ -144,9 +150,13 @@ import { excel } from "excel"
 | `excel.sheet(name?)` | 获取工作表 |
 | `excel.cell()` | 当前活动单元格 |
 | `excel.selection()` | 当前选中区域 |
-| `excel.open(path)` | 打开外部文件 |
-| `excel.read(path)` | 快捷读取外部文件 |
-| `excel.write(path, data)` | 快捷写入外部文件 |
+| `excel.open(path)` / `.create()` | 打开 / 新建工作簿 |
+| `excel.read(path)` / `.write(path, data)` | 快捷读 / 写外部文件 |
+| `excel.screenUpdating()` / `(bool)` | 屏幕刷新开关（批量写入时关闭可大幅提速） |
+| `excel.calculation()` / `(mode)` | 计算模式（auto/manual/semiauto） |
+| `excel.calculate()` | 强制重算所有工作簿 |
+| `excel.displayAlerts()` / `(bool)` | 弹窗警告开关 |
+| `excel.enableEvents()` / `(bool)` | 事件触发开关 |
 
 ### 对象链
 
@@ -154,8 +164,34 @@ import { excel } from "excel"
 excel.active          → Workbook
   .sheet("数据")       → Worksheet
     .cell("A1")        → Cell
-      .value("Hello")   → 设置值
-      .format({...})    → 设置格式
+      .value("Hello")   → 读写值
+      .formula("=SUM")  → 读写公式
+      .format({...})    → 读写格式
+      .address()        → "$A$1"
+      .row() / .column() / .hasFormula()
+    .range("A1:C10")   → Range
+      .values()         → 读写值（二维数组）
+      .formulas()       → 读写公式
+      .find("关键词")   → 查找
+      .offset(1, 2)     → 偏移
+      .sort("B", {order:"desc"})  → 排序
+      .autoFilter(1, ">100")      → 筛选
+      .merge() / .unmerge()       → 合并单元格
+      .border({style:"thin"})     → 边框
+      .alignment({horizontal:"center"})
+      .cut() / .copy("E1")        → 剪切/复制
+      .insert("down") / .delete("up")
+      .entireRow() / .entireColumn()
+    .table("用户表")    → Table
+      .rows()           → 读取数据行
+      .add({...})       → 新增行
+      .addAll([...])    → 批量新增
+  .insertRow(3)         → 插入行
+  .removeRow(3)         → 删除行
+  .hideRow(5) / .hideColumn(3)
+  .rowHeight(2) / .rowHeight(2, 30)
+  .visible() / .visible("hidden")
+  .activate()
 ```
 
 ### 输出调试
@@ -168,6 +204,8 @@ print("共 " + len(data) + " 行")
 ```
 
 > 完整 API 文档：[docs/ExcelScriptLoader-v1/API_REFERENCE.md](docs/ExcelScriptLoader-v1/API_REFERENCE.md)
+> 
+> API 命名与风格规范：[docs/ExcelScriptLoader-v1/API_STYLE_GUIDE.md](docs/ExcelScriptLoader-v1/API_STYLE_GUIDE.md)
 
 ---
 
@@ -198,17 +236,18 @@ dotnet build
 | 文件 | 职责 |
 |------|------|
 | `AddIn.cs` | 插件入口：AutoOpen/AutoClose、工作簿事件 |
-| `ExcelModule.cs` | 核心 API：所有 `excel.xxx()` 方法的实现 |
+| `ExcelModule.cs` | `excel.*` 顶层 API（PrototypeExtension） |
+| `ExcelModule.*.cs` (6 个) | 子对象工厂：Workbook/Worksheet/Cell/Range/Table + 工具方法 |
 | `MacroStorage.cs` | 宏持久化：CustomXMLParts 读写 |
-| `ScriptEngineAdapter.cs` | 引擎适配：编译执行、Console 重定向 |
+| `ScriptEngineAdapter.cs` | 引擎适配：编译执行、模块注册、COM 释放 |
 | `RibbonController.cs` | Ribbon UI 回调 |
 | `Dialogs/` | WinForms 对话框 |
 
 ### 修改 API
 
-1. 编辑 `ExcelModule.cs`：内部 `XxxToObject()` 工厂方法将 COM 对象包装为 `ObjectValue`
-2. 每个方法通过 `F("name", args => ...)` 创建 `FunctionValue`
-3. 无需修改其他文件——API 通过原型分派自动暴露给脚本
+1. **顶层 `excel.xxx`** → 编辑 `ExcelModule.cs`，添加 `[PrototypeFunction]` 或 `[PrototypeProperty]`
+2. **子对象 API** → 编辑对应的 `ExcelModule.Xxx.cs` 工厂文件，在 Dictionary 中添加 `F("name", ...)` 条目
+3. 遵循 [API_STYLE_GUIDE.md](docs/ExcelScriptLoader-v1/API_STYLE_GUIDE.md) 中的命名和代码骨架规范
 
 ### VS Code 集成
 
@@ -219,20 +258,14 @@ dotnet build
 
 ---
 
-## 📂 文档目录
+## 📂 文档
 
 | 文档 | 说明 |
 |------|------|
-| [API_REFERENCE.md](docs/ExcelScriptLoader-v1/API_REFERENCE.md) | Excel 脚本 API 完整参考 |
-| [API_DEVPLAN.md](docs/ExcelScriptLoader-v1/API_DEVPLAN.md) | API 开发计划（v1.1 路线图） |
-| [API开发指导.md](docs/ExcelScriptLoader-v1/API开发指导.md) | API 设计规范与开发指南 |
-| [ALIGNMENT_ExcelScriptLoader-v1.md](docs/ExcelScriptLoader-v1/ALIGNMENT_ExcelScriptLoader-v1.md) | 需求对齐分析 |
-| [CONSENSUS_ExcelScriptLoader-v1.md](docs/ExcelScriptLoader-v1/CONSENSUS_ExcelScriptLoader-v1.md) | 需求共识文档 |
-| [DESIGN_ExcelScriptLoader-v1.md](docs/ExcelScriptLoader-v1/DESIGN_ExcelScriptLoader-v1.md) | 架构设计文档 |
-| [TASK_ExcelScriptLoader-v1.md](docs/ExcelScriptLoader-v1/TASK_ExcelScriptLoader-v1.md) | 任务拆分与依赖图 |
-| [ACCEPTANCE_ExcelScriptLoader-v1.md](docs/ExcelScriptLoader-v1/ACCEPTANCE_ExcelScriptLoader-v1.md) | 验收报告 |
-| [FINAL_ExcelScriptLoader-v1.md](docs/ExcelScriptLoader-v1/FINAL_ExcelScriptLoader-v1.md) | 实现总结 |
-| [TODO_ExcelScriptLoader-v1.md](docs/ExcelScriptLoader-v1/TODO_ExcelScriptLoader-v1.md) | 待办事项与后续建议 |
+| [API_REFERENCE.md](docs/ExcelScriptLoader-v1/API_REFERENCE.md) | Excel 脚本 API 完整参考手册 |
+| [API_STYLE_GUIDE.md](docs/ExcelScriptLoader-v1/API_STYLE_GUIDE.md) | API 命名约定、代码骨架、开发检查清单 |
+
+> 开发过程中的需求分析、架构设计、任务拆分等文档位于 `docs/dev/`（已通过 `.gitignore` 隐藏），仅供二次开发参考。
 
 ---
 

@@ -3,26 +3,13 @@
 ## 导入
 
 ```js
-import { excel } from "excel"
+import { excel, msgbox, inputbox } from "excel"
 ```
 
----
-
-## 零、全局函数
-
-脚本引擎直接注入的全局函数，无需 `import`。
-
-### `msgbox(message)`
-弹出信息提示框。
+`msgbox` / `inputbox` 与 `excel` 同级从模块导入，调用时无需 `excel.` 前缀：
 ```js
 msgbox("处理完成！")
-```
-
-### `inputbox(prompt)` → String
-弹出输入对话框，返回用户输入的字符串。
-```js
 let name = inputbox("请输入姓名：")
-excel.sheet().cell("A1").value(name)
 ```
 
 ---
@@ -392,6 +379,9 @@ excel.enableEvents()/()  → bool/void  事件开关
 excel.copyText(text)     → void       复制到剪贴板
 excel.pasteText()        → String     从剪贴板粘贴
 
+msgbox(message)          → void       弹出消息框（模块导入）
+inputbox(prompt)         → String     弹出输入框（模块导入）
+
 workbook.name .path() .fullName()
 workbook.save() .saveAs() .close()
 workbook.sheet(name) .addSheet(name) .removeSheet(name) .sheets()
@@ -418,15 +408,6 @@ range.border()/.border(opts) .wrapText()/.wrapText(b) .alignment()/.alignment(op
 range.autoFilter(f?,c?) .sort(key,opts?)
 
 table.name .rows() .add(row) .addAll(rows) .clear()
-```
-
----
-
-## 九、Global Functions
-
-```
-msgbox(message)        → void     弹出信息框
-inputbox(prompt)       → String   弹出输入框
 ```
 
 ---
